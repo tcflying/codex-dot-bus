@@ -17,9 +17,12 @@ back**, supervised in a loop for long-running projects.
 
 ## What's in the box
 
-- `SKILL.md` — the agent-facing skill: wire protocol, tool reference, field-verified
-  gotchas, relay pattern, supervision loop, blind-marker acceptance, safety rules.
-  Any agent-skills-compatible IDE (Claude Code, ZCode, Cursor, …) can load it as-is.
+- `SKILL.md` — the agent-facing skill: **complete end-to-end walkthrough** (setup →
+  dispatch → gates → polling → acceptance → sustained operation), wire protocol,
+  tool reference, a battle-tested codex→dot relay dispatch template, authorization
+  and approval-gate handling, interruption/model recovery plays, field-verified
+  gotcha index, blind-marker acceptance, and safety rules. Any agent-skills-compatible
+  IDE (Claude Code, ZCode, Cursor, …) can load it as-is.
 - `scripts/app-tools-client.mjs` — portable Node ≥22 client (no npm deps).
   Discovers the pipe, validates the owner, frames JSON-RPC, calls tools.
 - `scripts/pipe-owner.ps1` — pipe enumeration + named-pipe server PID resolution.

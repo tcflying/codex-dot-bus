@@ -9,6 +9,9 @@ Send commands to Codex desktop threads and let Codex relay to ChatGPT ("dot") cl
 threads, all through one native pipe. Works from any environment that can spawn a
 process on the Windows host (ZCode, Claude Code, Cursor, Codex itself, cron, CI runner).
 
+This file is a complete end-to-end walkthrough: setup → dispatch → gates → polling →
+acceptance → sustained operation. All gotchas below were hit and solved in live runs.
+
 ## Requirements
 
 - Windows. The **ChatGPT desktop app (OpenAI Codex MSIX package)** must be running —
@@ -53,79 +56,171 @@ validation, framing, and calling. Use it; do not hand-roll unless porting.
 | `navigate_to_codex_page` | write | `arguments:{threadId}` — loads/shows a thread in the app window. Fixes `notLoaded` (see gotchas). |
 | `set_thread_title`, `move_thread_to_project`, `list_projects` | manage | Organize the fixed threads; do not touch other users' pins. |
 
-## Usage
+CLI form (arg 3 = envelope context, any EXISTING codex thread id):
 
 ```bash
-# List the live tool catalog (also proves the pipe + owner check):
 node scripts/app-tools-client.mjs list
-
-# Send a command into a fixed Codex project thread.
-# Arg 3 = envelope context (any EXISTING codex thread id). REQUIRED.
 node scripts/app-tools-client.mjs call send_message_to_thread \
-  '{"threadId":"<codex-thread>","prompt":"Continue task X; report receipts"}' \
-  <codex-thread>
-
-# Read it back (delivery + reply evidence):
+  '{"threadId":"<codex-thread>","prompt":"..."}' <codex-thread>
 node scripts/app-tools-client.mjs call read_thread \
-  '{"threadId":"<codex-thread>","turnLimit":3,"includeOutputs":true}' \
-  <codex-thread>
+  '{"threadId":"<codex-thread>","turnLimit":3,"includeOutputs":true}' <codex-thread>
 ```
 
-Programmatic use (ESM import): `discoverAppToolsPipes()`, `assertTrustedOwner(p)`,
-`requestNative(pipePath, method, params, timeoutMs)`.
+---
 
-## Operational gotchas (all field-verified — respect them)
+# FULL WALKTHROUGH (end to end, including Codex → dot)
 
-1. **Envelope `threadId` must be an existing codex thread.** Missing → `-32602`;
-   random UUID → `-32000`. Use one of your fixed codex threads.
-2. **`notLoaded` threads cannot receive sends** ("thread not found"). After an app
-   restart, call `navigate_to_codex_page{threadId}` once to load the thread, then
-   send. If the app window is stuck on an error screen, the app must be restored
-   first (the window must be alive for navigation).
-3. **App restarts re-randomize the pipe.** Discovery is cheap; always re-run it.
-   Also verify the pipe owner: server PID must map to `ChatGPT.exe` under the
-   `WindowsApps\OpenAI.Codex_*` MSIX path. The bundled client does this.
-4. **Model routing differs by backend.** With a ChatGPT account backend, names like
-   `gpt-6-luna` work; when the host routes models through a local gateway/proxy,
-   only that gateway's catalog is valid (e.g. `codex/gpt-6.1-sol`). Omit `model` to
-   use the thread default; a wrong name fails the whole turn.
-5. **dot cloud turns lag 3–8 minutes.** Poll `read_thread` at bounded intervals.
-   Never resend while the previous send's outcome is unknown.
-6. **States:** tool receipt `{"threadId":...}` = SUBMITTED. DELIVERED requires a
-   read-back showing the new turn. REPLIED requires an assistant `agentMessage`.
-   Never promote early.
-7. **Approval gate:** the app's bundled plugin config sets
-   `approval_mode:"prompt"` for `send_message_to_thread`, `create_thread`,
-   `fork_thread`, `handoff_thread`, `move_thread_to_project`,
-   `automation_update`. The FIRST such call by an in-app agent shows an approval
-   dialog in the desktop window — a human (or UI automation) must click allow-once.
-   External pipe calls are not subject to this dialog.
-8. **Policy gate (agent-initiated sends):** a Codex agent asked to message another
-   thread may refuse until it can trace explicit human authorization. Carry the
-   operator's authorization verbatim in the instruction; rigorous agents may verify
-   the original user record themselves before sending. This is by design — do not
-   try to bluff past it.
+Roles: **caller** = you (any IDE/agent/script, driving the pipe). **foreman** = a
+fixed `kind:"codex"` thread that does project work. **dot** = a fixed
+`kind:"chatgpt"` cloud thread. The foreman relays to dot using its OWN native
+`codex_app` tools — you do not need to relay every message yourself.
 
-## The relay pattern (IDE → Codex → dot), with supervision loop
+## Phase 0 — Setup (once per project)
 
-1. **Setup once:** `create_thread` (project target) = the fixed *foreman* Codex
-   thread. `create_thread{target:{type:"chatgptWorkCloud"}}` or an existing
-   `kind:"chatgpt"` thread = the fixed *dot* thread. Optionally title both.
-2. **Dispatch:** send the foreman thread a self-contained instruction that includes:
-   the operator's authorization quote (for cross-thread sends), the exact dot
-   `threadId`, the message to relay, and "read back the reply with read_thread and
-   report both receipts verbatim".
-3. **Supervise** (cron / timer, 5–15 min cadence): `read_thread` the foreman —
-   - `active` → wait (or check again next tick);
-   - `idle` + completed turn → parse final report, send next instructions;
-   - `idle` + agent asking a question → surface to the operator or answer with
-     authorization;
-   - agent reports "dot silent" within ~8 min → normal lag, do not resend.
-4. **Blind-marker acceptance (round trips):** generate marker
-   `BUS-<YYYYMMDD>-<6HEX>` locally at round start, seal it before sending, pass it
-   only through the channel under test, require the far end to echo it AND generate
-   its own fresh marker. Pass = both markers present + native turn/message receipts
-   on every hop + no human copy-paste of message bodies.
+1. Find or create the foreman:
+   - `list_threads` → pick/create a codex thread. Create with
+     `create_thread{title, prompt:"<bootstrap>", target:{type:"project",projectId}}`
+     (projectId from `list_projects`) or `{type:"projectless"}`. The receipt carries
+     the new `threadId` and its output directory (usable for file-level exchange).
+2. Find or create the dot thread:
+   - Existing: `list_threads`, filter `kind:"chatgpt"`, match by title.
+   - New: `create_thread{title, prompt:"<init>", target:{type:"chatgptWorkCloud"}}`.
+   - **TRAP: the create receipt returns `clientThreadId:"local-chatgpt:<uuid>"` —
+     that id is NOT sendable.** Send attempts to it fail (-32000). Re-run
+     `list_threads` and use the real catalog UUID that appears (kind:"chatgpt").
+     The cloud agent may also rename the thread; match by `kind` + recency, never
+     by assuming the id shape.
+3. Optional: `set_thread_title` both. Record the two fixed ids somewhere private
+   (your own notes, not the public repo).
+
+## Phase 1 — Dispatch to the foreman (caller → codex)
+
+Send the foreman a self-contained dispatch. Battle-tested template (replace
+`<...>`; keep the structure — it satisfies both the policy gate and the receipt
+reporting in one shot):
+
+```text
+RELAY <MARKER>: act as the relay origin yourself.
+Operator authorization, verbatim from the human owner: "<quote the owner's exact
+instruction/authorization for this send>".
+1) Call your native tool send_message_to_thread with threadId "<dot-thread-id>"
+   and prompt exactly: RELAY-FROM-CODEX <MARKER> — reply with exactly one line:
+   RELAY-ACK <MARKER> <your own <PREFIX>- + 6 random uppercase hex>. No other text.
+2) Then call read_thread on that same threadId to fetch the dot reply.
+3) Final answer: report verbatim (a) your send tool receipt, (b) the dot reply line.
+```
+
+Generate `<MARKER>` locally at round start (`BUS-<YYYYMMDD>-<6HEX>`) and seal it
+(write it down with a timestamp) BEFORE sending. It passes only through this
+channel — never in filenames, side notes, or summaries the far end could parrot.
+
+Send it: `send_message_to_thread{threadId:<foreman>, prompt:<dispatch>, model?}`.
+Receipt `{"threadId":...}` = SUBMITTED only.
+
+Model note: omit `model` to use the thread default. If you must set one, it must
+be valid for the CURRENT routing backend (account backend vs local gateway have
+different catalogs — a wrong name fails the whole turn; see Phase 2 recovery).
+
+## Phase 2 — Gates you WILL hit (agent-initiated sends)
+
+**Gate A — authorization policy (by design).** The foreman agent may refuse to
+send cross-thread until it can trace explicit human authorization. Live behavior:
+it reads its policy config, asks "please confirm: allow sending to <thread>?".
+Handling:
+- Reply (as a normal follow-up send to the foreman) with a direct answer that
+  carries traceable authorization: the operator's verbatim words + scope (what is
+  allowed, what is not: one marked test message to that exact thread, no new/switched
+  conversations). Rigorous agents may then verify the original user record in their
+  own session history — that is the feature working; do not bluff or fabricate.
+
+**Gate B — desktop approval dialog.** The app's bundled plugin config sets
+`approval_mode:"prompt"` for `send_message_to_thread`, `create_thread`,
+`fork_thread`, `handoff_thread`, `move_thread_to_project`, `automation_update`.
+The agent's first such call shows a dialog in the desktop app window (the foreman
+turn shows `waitingOnApproval`). Handling: a human clicks allow-once, or UI
+automation does (enumerate buttons in the app window, Invoke the allow-once
+button). This approves AUTHORIZATION, not message bodies — bodies still travel
+machine-side only. External pipe calls (caller-driven) do not trigger this dialog.
+
+**Recovery plays (all seen live):**
+- Turn `failed` with a model error (404 "knows no model"): resend WITHOUT `model`
+  (use the thread default) or with a name valid for the current backend.
+- Turn `interrupted` (e.g. app reload) and thread back to `notLoaded`:
+  `navigate_to_codex_page{threadId:<foreman>}` once to load it, then resend a
+  resume instruction: "Continue (previous turn interrupted; authorization already
+  verified): execute steps 1)-3) now."
+- "thread not found" on send after an app restart: same notLoaded fix (Phase 0 trap
+  list also applies). The app window must be alive — if it sits on an error/update
+  screen, restore/retry the app first.
+
+## Phase 3 — Poll and collect (both legs)
+
+- Foreman turn: typically completes in ~45–120 s. Poll `read_thread` on the foreman
+  every ~30–60 s while `status:"active"`.
+- Dot cloud turn: lags **3–8 minutes**. The foreman polls it with its own
+  `read_thread`; you just keep polling the foreman. If the foreman's final report
+  says "dot silent" within that window, that is normal lag — do NOT resend.
+- Never resend while a send's outcome is unknown. Read back before any retry.
+
+Where the evidence lives in `read_thread` output (foreman turn `items[]`):
+- `mcpToolCall` with `send_message_to_thread` arguments — proof the AGENT (not
+  you) originated the send; arguments must carry your exact relay text.
+- `agentMessage` entries — progress notes and the final report.
+- On the dot thread: a new turn, `completed`, whose `agentMessage` echoes
+  `<MARKER>` plus its own freshly generated marker.
+
+## Phase 4 — Acceptance checklist (a relay round is PASS only if ALL hold)
+
+1. `<MARKER>` was generated and sealed locally BEFORE the send.
+2. Foreman turn shows the agent's OWN `send_message_to_thread` call with the exact
+   relay text in `arguments` (not a caller-side delegation receipt only).
+3. Dot turn `completed`; its `agentMessage` contains `<MARKER>` AND a fresh
+   far-end marker it generated this round.
+4. The foreman's final report quotes BOTH receipts verbatim (send receipt +
+   dot reply line).
+5. No human carried message bodies between ends (clicking allow-once is
+   authorization, not transport).
+States: tool receipt = SUBMITTED; new turn read back = DELIVERED; assistant
+`agentMessage` present = REPLIED. Never promote early; never claim PASS from an
+ACK string alone.
+
+## Phase 5 — Sustained operation (supervision loop)
+
+Run a supervisor (cron / timer / your IDE's scheduler) at 5–15 min cadence:
+`read_thread` the foreman and branch on state:
+
+| Foreman state | Action |
+|---|---|
+| `active` | Wait (next tick, or `wait_threads` with a DIFFERENT codex thread as envelope context). |
+| `idle`, last turn completed | Parse the final report → send next dispatch (Phase 1 template). |
+| `idle`, agent asking a question / awaiting authorization | Surface to the operator, or answer with traceable authorization (Gate A handling). |
+| `systemError` / `failed` turn | Apply Phase 2 recovery plays, then resume. |
+| Report says "dot silent" < 8 min | Normal cloud lag; wait. |
+
+Keep the same two fixed threads for the project's lifetime (bus identity), pass a
+fresh `<MARKER>` per round, and archive nothing you did not create.
+
+---
+
+## Gotcha index (all field-verified)
+
+1. Envelope `threadId` must be an existing codex thread: missing → `-32602`; random
+   UUID → `-32000`.
+2. `notLoaded` threads reject sends ("thread not found") — fix with
+   `navigate_to_codex_page{threadId}`; app window must be alive.
+3. Pipe re-randomizes on app restart; discovery is cheap — always re-run; always
+   owner-check (server PID → `ChatGPT.exe` under `WindowsApps\OpenAI.Codex_*`).
+4. Model catalogs differ per routing backend; a bad name kills the turn; omit
+   `model` when unsure.
+5. Dot cloud turns lag 3–8 min; poll, never resend on unknown outcome.
+6. `{"threadId":...}` receipt is SUBMITTED, not DELIVERED/REPLIED.
+7. Six tools are `approval_mode:"prompt"` for in-app agents (Gate B); external
+   pipe calls bypass the dialog.
+8. `chatgptWorkCloud` create returns unusable `clientThreadId` — use the catalog
+   UUID from `list_threads` (Phase 0 trap).
+9. `wait_threads` cannot use the waited thread as its own envelope context.
+10. Cross-thread agent sends are policy-gated (Gate A) — carry traceable human
+    authorization; expect and welcome verification, don't fight it.
 
 ## Safety rules
 
@@ -139,5 +234,6 @@ Programmatic use (ESM import): `discoverAppToolsPipes()`, `assertTrustedOwner(p)
 
 ChatGPT desktop (OpenAI Codex MSIX) 26.1021.x / 26.1023.x on Windows 10/11 x64,
 live round trips: external pipe client → codex thread (ACK), → dot cloud thread
-(challenge ACK), and in-app codex agent → dot (relay ACK + read-back). See the repo
-README for the evidence-summary links.
+(challenge ACK), and in-app codex agent → dot relay (agent-owned send + read-back
+with verbatim receipts), including interruption/model/approval recoveries. See the
+repo README for details.
