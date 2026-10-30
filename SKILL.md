@@ -16,7 +16,7 @@ acceptance → sustained operation. All gotchas below were hit and solved in liv
 
 - Windows. The **ChatGPT desktop app (OpenAI Codex MSIX package)** must be running —
   it hosts the pipe. If it is not running, start it, then re-discover.
-- Node.js ≥ 22 (uses `node:net`, `node:crypto` only — no npm install).
+- Node.js ≥ 22 (uses `node:net`, `node:crypto`, `node:child_process`, `node:path`, `node:url` — no npm install).
 - PowerShell available for pipe enumeration / owner validation.
 
 ## The transport (what you are talking to)
@@ -24,7 +24,8 @@ acceptance → sustained operation. All gotchas below were hit and solved in liv
 - Named pipe: `\\.\pipe\codex-app-tools-<uuid>` — **the uuid changes every app
   restart. Never persist it. Re-discover on every operation.**
 - Wire: 4-byte little-endian length prefix + UTF-8 JSON-RPC 2.0.
-- Methods: `tools/list` `{threadStartKind:"all"}`, `tools/call`, `tools/cancel`.
+- Methods: `tools/list` `{threadStartKind:"all"}`, `tools/call`, `tools/cancel` (cancel exists in the
+  protocol but is not implemented by the bundled client).
 - `tools/call` params (envelope):
 
   ```json

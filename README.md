@@ -34,7 +34,7 @@ git clone https://github.com/tcflying/codex-dot-bus.git
 cd codex-dot-bus
 
 # 1) Prove the bus (ChatGPT desktop app must be running):
-node scripts/app-tools-client.mjs list | head -40
+node scripts/app-tools-client.mjs list | head -40    # bash; PowerShell: | Select-Object -First 40
 
 # 2) Send a command to a codex thread (arg 3 = any existing codex thread id,
 #    used as the call envelope context):

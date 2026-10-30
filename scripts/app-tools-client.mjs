@@ -34,7 +34,7 @@ function decodeFrames(buffer) {
 
 /** Enumerate codex-app-tools pipes with their server owner info. */
 export function discoverAppToolsPipes() {
-  const raw = execFileSync('powershell.exe', ['-NoProfile', '-File', OWNER_SCRIPT, '-Discover'], {
+  const raw = execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', OWNER_SCRIPT, '-Discover'], {
     encoding: 'utf8',
     maxBuffer: 4 * 1024 * 1024,
   });
@@ -146,6 +146,7 @@ async function main() {
   if (cmd === 'list') {
     const results = await listNativeTools();
     process.stdout.write(JSON.stringify(results, null, 2));
+    if (results.length === 0 || results.every((r) => r.error)) process.exitCode = 1;
     return;
   }
   if (cmd === 'call') {
@@ -159,6 +160,7 @@ async function main() {
     return;
   }
   console.error('usage: app-tools-client.mjs list | call <tool> <json-args> <envelope-codex-thread-id>');
+  process.exitCode = 1;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {

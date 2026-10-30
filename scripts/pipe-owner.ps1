@@ -48,6 +48,7 @@ if ($Discover) {
 }
 $serverPid = [CodexBus.NativePipe]::GetServerProcessId($PipePath)
 $process = Get-CimInstance Win32_Process -Filter "ProcessId = $serverPid"
+if (-not $process) { throw "Pipe server process $serverPid exited before inspection." }
 [pscustomobject]@{
     processId       = [int]$process.ProcessId
     name            = [string]$process.Name
