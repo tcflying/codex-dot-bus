@@ -61,12 +61,107 @@ once before executing original code; do not execute `&amp;` / `&gt;=` as operato
 or repeatedly HTML-unescape arbitrary user source. The bundled client itself
 JSON-serializes prompts without HTML encoding.
 
+## Durable local execution
+
+For an authorized local task that must continue after a failed check, hand it to
+`scripts/task-runner.mjs` once. This is a local controller with a real Codex CLI
+worker, not a new TBO room API or a modification of the cloud scheduler.
+
+```powershell
+node scripts/task-runner.mjs init D:/jobs/task.json D:/jobs/task-state
+node scripts/task-runner.mjs start D:/jobs/task-state
+node scripts/task-runner.mjs status D:/jobs/task-state
+```
+
+`start` runs the controller in the background. `run <state-dir>` runs it in the
+foreground, or resumes after a controller crash. Do not call `init` again to
+resume. Both controller forms use the same exclusive OS lock.
+
+An example **trusted, executable task specification**, adapted to your paths:
+
+```json
+{
+  "version": 1,
+  "workspace": "D:/work/project",
+  "objective": "Fix the reported defect; preserve unrelated edits.",
+  "backend": {
+    "kind": "codex",
+    "executable": "D:/tools/codex.exe",
+    "model": "group/subagent-only",
+    "provider": "magpie"
+  },
+  "acceptance": {
+    "cwd": "D:/verification/project",
+    "argv": ["C:/Program Files/nodejs/node.exe", "D:/verification/project/check.mjs", "D:/work/project"],
+    "files": ["D:/verification/project/check.mjs"]
+  },
+  "maxRepairAttempts": 3,
+  "maxRepeatedFailures": 2,
+  "commandTimeoutMs": 300000,
+  "totalTimeoutMs": 900000
+}
+```
+
+Use the actual native Codex executable, not a PowerShell/.cmd shim. The provider
+must already be configured. No model fallback occurs. The CLI adapter uses
+`workspace-write`, ephemeral runs and medium reasoning effort, without changing
+global configuration. Optional `backend.disabledMcpServers` explicitly disables
+named MCP servers for that child only. `backend.kind:"command"` plus `argv` is
+also supported for trusted local executors and deterministic fixtures; it must
+not be represented as a live-model run.
+
+The controller first runs the external acceptance check. Failure invokes a
+repair with the actual diagnostic output, followed by the same check. It keeps
+going within the declared attempt/time limits. Model prose cannot mark a task
+complete. Verification files and executable are hashed before execution and
+rechecked afterward. Put state and **all verification dependencies** outside the
+workspace and its enclosing Git root, and list dependencies in `acceptance.files`.
+These checks detect changed inputs; they are not a security sandbox for arbitrary
+hostile executors. Task JSON is equivalent to authorizing local commands: never
+run a specification obtained from untrusted chat output without reviewing it.
+
+Each attempt has a unique ID, a single-start claim, a process-start receipt,
+bounded logs and an atomic result receipt. A restarted controller reattaches to
+the same live attempt. A lost/uncertain launch or a worker that exits without a
+receipt becomes `blocked`, not an automatic duplicate. Timeouts, changed
+verification files, exhausted budgets and repeated failures retain an explicit
+reason. Inspect and resolve a blocked task before authorizing a fresh task.
+The lock is a local loopback port derived from the state path; a port collision
+fails safely. There is no installed service, login task or automatic reboot start.
+An attempt survives its controller being killed; resumption after an OS restart
+still requires `run` and may block if the attempt outcome is unknown.
+
+Run focused regression checks:
+
+```powershell
+node --test scripts/app-tools-client.test.mjs scripts/task-runner.test.mjs
+```
+
+For a separately labelled **live-model proof**, use a new empty location outside
+this repository. This consumes model access and creates an isolated broken
+function plus a verifier. The harness kills only its own controller during the
+real repair, restarts it, and requires the original attempt to finish without a
+duplicate dispatch. It writes `evidence.json`, including actual failing/passing
+checks and the source change:
+
+```powershell
+node scripts/prove-task-runner.mjs --root D:/proof/new-run --codex D:/tools/codex.exe --model group/subagent-only --provider magpie
+```
+
+Do not publish private task specs, model logs or account identifiers. Fixture
+tests alone do not prove a model, Dot handoff, or production task succeeded.
+
+[Verified run: 14 tests plus real model repair and controller restart](docs/verification-20261117.md).
+
 ## Files and installation
 
 - [SKILL.md](SKILL.md): minimal routing, verification, failure recovery and scope rules.
 - [scripts/app-tools-client.mjs](scripts/app-tools-client.mjs): native pipe client.
 - [scripts/pipe-owner.ps1](scripts/pipe-owner.ps1): pipe discovery and server identity.
 - [scripts/app-tools-client.test.mjs](scripts/app-tools-client.test.mjs): targeted result/exit-code checks.
+- [scripts/task-runner.mjs](scripts/task-runner.mjs): persistent local execution and result recovery.
+- [scripts/task-runner.test.mjs](scripts/task-runner.test.mjs): deterministic failure/recovery tests.
+- [scripts/prove-task-runner.mjs](scripts/prove-task-runner.mjs): opt-in live-model/restart proof.
 
 Copy or symlink this repository into an agent's skill folder, for example
 `<CODEX_HOME>/skills/codex-dot-bus`, `~/.agents/skills/codex-dot-bus`, or
@@ -81,8 +176,9 @@ node --test scripts/app-tools-client.test.mjs
 Historical supported Work-thread round trips used desktop 26.1021.x/26.1023.x.
 The 26.1106.6628.0 investigation verified current pipe discovery, TBO Dot root/send
 mismatch, normal-client room send and ACK, and XML escaping in native delegation.
-It did **not** establish a programmatic TBO room-send API or reliable unattended
-resumption. Custom instructions do not create a scheduler: a promised later check
+It did **not** establish a programmatic TBO room-send API or reliable cloud
+resumption. The local runner above is a separate execution path with explicit
+acceptance and recovery. Custom instructions do not create a scheduler: a promised later check
 needs an actual scheduling receipt and subsequent execution evidence.
 
 Tool availability, approval gates and schemas depend on the app version. Recheck
