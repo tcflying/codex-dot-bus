@@ -1,90 +1,92 @@
 # codex-dot-bus
 
-**Drive OpenAI Codex desktop threads and coordinate Codex ↔ ChatGPT ("dot") cloud
-threads from any IDE, agent, or script on Windows — through the app's native
-`codex-app-tools` named pipe.**
+Drive supported Codex and ChatGPT Work threads through the Windows desktop app's
+native `codex-app-tools` pipe. **TBO Dot messaging rooms are a different surface:**
+the repository name does not mean every Dot can be sent through the thread API.
 
-One pipe, both thread kinds:
+| Destination | Programmatic support |
+|---|---|
+| Codex thread with catalog ID and host | Native thread tools |
+| ChatGPT Work chat (`kind:"chatgpt"`) | Native thread tools supported by the installed app |
+| TBO Dot with Dot ID + room ID + durable root | No room-send tool exposed by the checked 26.1106.6628.0 pipe; use the normal client fallback |
 
-- `kind:"codex"` — local Codex tasks (your coding agents)
-- `kind:"chatgpt"` — ChatGPT cloud threads ("dot")
-
-Any local process (ZCode, Claude Code, Cursor, a cron job, another Codex agent)
-can `create_thread`, `send_message_to_thread`, `read_thread`, and `wait_threads`
-on either kind. A Codex agent can do the same from inside its own turn, which
-enables the relay pattern: **IDE → Codex foreman thread → dot cloud thread →
-back**, supervised in a loop for long-running projects.
-
-## What's in the box
-
-- `SKILL.md` — the agent-facing skill: **complete end-to-end walkthrough** (setup →
-  dispatch → gates → polling → acceptance → sustained operation), wire protocol,
-  tool reference, a battle-tested codex→dot relay dispatch template, authorization
-  and approval-gate handling, interruption/model recovery plays, field-verified
-  gotcha index, blind-marker acceptance, and safety rules. Any agent-skills-compatible
-  IDE (Claude Code, ZCode, Cursor, …) can load it as-is.
-- `scripts/app-tools-client.mjs` — portable Node ≥22 client (no npm deps).
-  Discovers the pipe, validates the owner, frames JSON-RPC, calls tools.
-- `scripts/pipe-owner.ps1` — pipe enumeration + named-pipe server PID resolution.
+A Dot root may be readable but still return `thread not found` when sent through
+`send_message_to_thread`. Do not infer send support from `read_thread`, substitute
+a room ID for a thread ID, or blindly navigate/retry. `chatgptWorkCloud` creates a
+Work chat, not a TBO Dot.
 
 ## Quick start
 
-```bash
+Requires Windows, a running OpenAI Codex desktop app, Node >=22 and PowerShell.
+No npm install is needed. Use native host tools directly when available.
+
+```powershell
 git clone https://github.com/tcflying/codex-dot-bus.git
 cd codex-dot-bus
-
-# 1) Prove the bus (ChatGPT desktop app must be running):
-node scripts/app-tools-client.mjs list | head -40    # bash; PowerShell: | Select-Object -First 40
-
-# 2) Send a command to a codex thread (arg 3 = any existing codex thread id,
-#    used as the call envelope context):
-node scripts/app-tools-client.mjs call send_message_to_thread \
-  '{"threadId":"<codex-thread-id>","prompt":"Run the test suite and report exit codes"}' \
-  <codex-thread-id>
-
-# 3) Read it back (delivery + reply evidence):
-node scripts/app-tools-client.mjs call read_thread \
-  '{"threadId":"<codex-thread-id>","turnLimit":3,"includeOutputs":true}' \
-  <codex-thread-id>
+node scripts/app-tools-client.mjs list
+node scripts/app-tools-client.mjs call send_message_to_thread '{"threadId":"<target>","hostId":"local","prompt":"<authorized message with unique marker>"}' '<existing-sender-thread>'
+node scripts/app-tools-client.mjs call read_thread '{"threadId":"<target>","hostId":"local","turnLimit":3,"includeOutputs":true}' '<existing-sender-thread>'
+node scripts/app-tools-client.mjs call wait_threads '{"targets":[{"threadId":"<target>","hostId":"local","afterCursor":"<last-wait-cursor>"}],"timeoutMs":60000}' '<existing-sender-thread>'
 ```
 
-## Install as an agent skill
+Use the real target `hostId`; omit `afterCursor` on the first wait. Inspect current
+schemas from `list` rather than copying obsolete `threadIds` examples. Sender
+context must identify an existing authorized Codex thread. Do not invent a sender
+or use direct IPC to bypass an approval requirement.
 
-Copy/symlink this directory into your agent's skills folder:
+The client rediscovers the pipe and verifies its owner as the packaged
+`ChatGPT.exe`. A call prints the original result in `raw`; protocol failure exits
+nonzero. The client does not convert a failed request into a successful send.
 
-| Agent | Location |
-|---|---|
-| ZCode | `~/.zcode/skills/codex-dot-bus/` |
-| Claude Code | `~/.claude/skills/codex-dot-bus/` (or `~/.agents/skills/`) |
-| Codex CLI | `<CODEX_HOME>/skills/codex-dot-bus/` |
-| Generic | any dir your agent scans for `SKILL.md` |
+## Delivery is not completion
 
-The `description` frontmatter tells the agent when to reach for it; the body is
-self-contained operating instructions.
+1. Accepted tool call: submitted only.
+2. New matching target turn or room message with author/message/request IDs: delivered.
+3. Matching destination assistant ACK/answer: replied.
+4. Requested operation's actual result: completed.
 
-## Field-verified facts baked into the skill
+Prefer programmatic send/readback. Only when that route cannot establish delivery
+or replies, use computer use on the exact destination in the normal signed-in
+client. Read back the populated draft, actually submit it, and confirm the real
+message and reply. Filling an input, clicking an unverified button, or a human
+clicking Send is not proof of an autonomous programmatic send. Report human help
+accurately and never duplicate an unknown-outcome request.
 
-Verified live against ChatGPT desktop (OpenAI Codex MSIX) 26.1021.x / 26.1023.x:
+Do not implement room sending by stripping app-attest/Sentinel preparation from
+the normal client's message API. A missing public pipe tool is a real capability
+boundary, not permission to bypass runtime integrity checks.
 
-- Full external round trip: pipe client → codex thread (ACK) and → dot cloud
-  thread (challenge ACK with fresh marker).
-- In-app Codex agent → dot relay: agent-driven `send_message_to_thread` +
-  `read_thread` read-back, receipts reported verbatim.
-- The gotchas that break naive integrations: pipe re-randomization on app
-  restart, `notLoaded` threads rejecting sends (fix: `navigate_to_codex_page`),
-  envelope-thread rules for `tools/call` and `wait_threads`, model-name routing
-  differences (account backend vs local gateway), 3–8 min dot cloud turn lag,
-  the six `approval_mode:"prompt"` tools, and the human-authorization policy
-  gate for agent-initiated cross-thread sends.
+The official delegation wrapper XML-escapes `<input>`. Decode that wrapper's text
+once before executing original code; do not execute `&amp;` / `&gt;=` as operators
+or repeatedly HTML-unescape arbitrary user source. The bundled client itself
+JSON-serializes prompts without HTML encoding.
 
-## Limitations
+## Files and installation
 
-- Windows only (named pipes). The desktop app must be running.
-- The pipe is a local, unauthenticated-by-design IPC surface of a logged-in
-  desktop app: anyone with a local session can use it. The client therefore
-  validates the pipe owner (packaged `ChatGPT.exe`) before every write, and the
-  skill's safety rules forbid touching threads you did not create.
-- Tool surface follows the app version; re-run `list` after app updates.
+- [SKILL.md](SKILL.md): minimal routing, verification, failure recovery and scope rules.
+- [scripts/app-tools-client.mjs](scripts/app-tools-client.mjs): native pipe client.
+- [scripts/pipe-owner.ps1](scripts/pipe-owner.ps1): pipe discovery and server identity.
+- [scripts/app-tools-client.test.mjs](scripts/app-tools-client.test.mjs): targeted result/exit-code checks.
+
+Copy or symlink this repository into an agent's skill folder, for example
+`<CODEX_HOME>/skills/codex-dot-bus`, `~/.agents/skills/codex-dot-bus`, or
+`~/.zcode/skills/codex-dot-bus`.
+
+```powershell
+node --test scripts/app-tools-client.test.mjs
+```
+
+## Verified boundaries
+
+Historical supported Work-thread round trips used desktop 26.1021.x/26.1023.x.
+The 26.1106.6628.0 investigation verified current pipe discovery, TBO Dot root/send
+mismatch, normal-client room send and ACK, and XML escaping in native delegation.
+It did **not** establish a programmatic TBO room-send API or reliable unattended
+resumption. Custom instructions do not create a scheduler: a promised later check
+needs an actual scheduling receipt and subsequent execution evidence.
+
+Tool availability, approval gates and schemas depend on the app version. Recheck
+after updates. Keep credentials and private chat identities out of this repository.
 
 ## License
 

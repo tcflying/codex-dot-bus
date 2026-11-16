@@ -134,15 +134,20 @@ export async function callAppTool(tool, args, envelopeThreadId, { timeoutMs = 60
   const pipes = discoverAppToolsPipes();
   assertTrustedOwner(pipes[0]);
   const result = await requestNative(pipes[0].pipePath, 'tools/call', buildCallParams(tool, args, envelopeThreadId), timeoutMs);
-  const text = result?.contentItems?.find((c) => typeof c?.text === 'string')?.text;
-  return { success: result?.success === true, text, raw: result };
+  return formatToolResult(result);
+}
+
+/** Keep protocol errors intact; text merely mentioning an error is not a failure flag. */
+export function formatToolResult(result) {
+  const text = (result?.contentItems ?? result?.content)?.find((c) => typeof c?.text === 'string')?.text;
+  return { success: result?.success === true && result?.isError !== true, text, raw: result };
 }
 
 // CLI:
 //   node app-tools-client.mjs list
 //   node app-tools-client.mjs call <tool> <json-args> <envelope-codex-thread-id>
-async function main() {
-  const [cmd, tool, argsJson, envelopeThreadId] = process.argv.slice(2);
+export async function main(argv = process.argv.slice(2), call = callAppTool) {
+  const [cmd, tool, argsJson, envelopeThreadId] = argv;
   if (cmd === 'list') {
     const results = await listNativeTools();
     process.stdout.write(JSON.stringify(results, null, 2));
@@ -155,8 +160,9 @@ async function main() {
       throw new Error('envelope thread id required: use an EXISTING codex thread id as call context (random/missing ids are rejected by the app)');
     }
     const args = argsJson ? JSON.parse(argsJson) : {};
-    const out = await callAppTool(tool, args, envelopeThreadId);
+    const out = await call(tool, args, envelopeThreadId);
     process.stdout.write(JSON.stringify(out, null, 2));
+    if (!out.success) process.exitCode = 1;
     return;
   }
   console.error('usage: app-tools-client.mjs list | call <tool> <json-args> <envelope-codex-thread-id>');
