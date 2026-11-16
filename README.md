@@ -126,7 +126,8 @@ the same live attempt. A lost/uncertain launch or a worker that exits without a
 receipt becomes `blocked`, not an automatic duplicate. Timeouts, changed
 verification files, exhausted budgets and repeated failures retain an explicit
 reason. Inspect and resolve a blocked task before authorizing a fresh task.
-The lock is a local loopback port derived from the state path; a port collision
+The Windows lock is an OS-owned named pipe derived from the state path, avoiding
+reserved TCP port ranges. Other platforms use a local loopback port; a collision
 fails safely. There is no installed service, login task or automatic reboot start.
 An attempt survives its controller being killed; resumption after an OS restart
 still requires `run` and may block if the attempt outcome is unknown.
@@ -151,7 +152,7 @@ node scripts/prove-task-runner.mjs --root D:/proof/new-run --codex D:/tools/code
 Do not publish private task specs, model logs or account identifiers. Fixture
 tests alone do not prove a model, Dot handoff, or production task succeeded.
 
-[Verified run: 14 tests plus real model repair and controller restart](docs/verification-20261117.md).
+[Verified run: 15 tests plus real model repair and controller restart](docs/verification-20261117.md).
 
 ## Files and installation
 

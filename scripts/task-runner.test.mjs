@@ -163,3 +163,22 @@ test('junction workspace is rejected before any execution', async t => {
   f.spec.workspace = link; await atomicJSON(f.specFile, f.spec);
   await assert.rejects(init(f.specFile, f.state), /Symlink\/junction/);
 });
+
+test('start detaches the controller and completes without another command', async t => {
+  const f = await fixture(t); await init(f.specFile, f.state);
+  const launcher = spawn(process.execPath, [runner, 'start', f.state], { windowsHide: true });
+  let output = '';
+  launcher.stdout.on('data', chunk => { output += chunk; });
+  const exit = await new Promise(resolve => launcher.once('close', resolve));
+  assert.equal(exit, 0);
+  const submitted = JSON.parse(output);
+  assert.equal(submitted.status, 'controller_started');
+  const result = await until(async () => {
+    const s = await status(f.state);
+    return ['completed', 'blocked'].includes(s.status) ? s : null;
+  });
+  assert.equal(result.status, 'completed'); assert.equal(result.repairs, 1);
+  await until(() => {
+    try { process.kill(submitted.controllerPid, 0); return false; } catch { return true; }
+  });
+});

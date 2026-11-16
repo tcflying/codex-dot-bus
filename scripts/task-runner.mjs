@@ -139,13 +139,14 @@ function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
 }
 async function mutex(root) {
-  // An OS-owned loopback socket is released on crash; no stale-file deletion race.
+  // Windows pipes avoid reserved TCP ports and disappear on crash, unlike lockfiles.
   const key = process.platform === 'win32' ? root.toLowerCase() : root;
   const port = 20000 + (Number.parseInt(digest(key).slice(0, 8), 16) % 40000);
+  const pipe = `\\\\.\\pipe\\codex-task-${digest(key)}`;
   const server = net.createServer(socket => socket.destroy());
   await new Promise((resolve, reject) => {
-    server.once('error', error => reject(new Error(`Controller lock unavailable on 127.0.0.1:${port}: ${error.code}`)));
-    server.listen({ host: '127.0.0.1', port, exclusive: true }, resolve);
+    server.once('error', error => reject(new Error(`Controller lock unavailable: ${error.code}`)));
+    server.listen(process.platform === 'win32' ? { path: pipe } : { host: '127.0.0.1', port, exclusive: true }, resolve);
   });
   return () => new Promise(resolve => server.close(resolve));
 }

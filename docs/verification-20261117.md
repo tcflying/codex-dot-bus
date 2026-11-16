@@ -7,11 +7,13 @@ This report separates deterministic tests from an actual model run.
 
 `node --test scripts/app-tools-client.test.mjs scripts/task-runner.test.mjs`
 
-**14 passed, 0 failed.** These cover native-client failure reporting, automatic
+**15 passed, 0 failed.** These cover native-client failure reporting, automatic
 repair, a failed repair followed by another repair, refusal of a prose-only
 success, controller crash/recovery, exclusive locking, uncertain/dead attempts,
 verification tampering, timeout handling, backend failures, bounded attempts,
-changed task specifications and junction rejection.
+changed task specifications, junction rejection, and detached background start.
+The added background-start check exposed a reserved Windows TCP-port collision;
+Windows locking now uses an OS-owned named pipe. All 15 tests pass with that fix.
 
 ## Actual model, automatic repair and controller restart
 
@@ -31,6 +33,11 @@ after the harness started.
 | Final persisted task state | `completed`, `repairs: 1` |
 
 Completed at **2026-11-16T17:44:41.287Z** (2026-11-17 01:44:41 Asia/Shanghai).
+After changing the Windows lock to a named pipe, a second fresh live-model run
+completed at **2026-11-16T17:51:50.328Z** (2026-11-17 01:51:50 Asia/Shanghai),
+again with check exits **1 → 0**, exactly **one** repair dispatch, and the same
+attempt retained across the deliberate controller restart. The source hashes
+below matched in both runs.
 The model also encountered and corrected a patch-command error during its own
 run. The controller did not need a user to tell it to continue.
 

@@ -1,6 +1,6 @@
 ---
 name: codex-dot-bus
-description: Send and verify authorized messages between supported Codex and ChatGPT Work threads through the Windows desktop app's native pipe. Identify TBO Dot messaging rooms separately; use the normal signed-in client only when the programmatic route cannot establish delivery or replies.
+description: Send and verify authorized messages between supported Codex and ChatGPT Work threads, or run explicitly authorized local tasks with persistent state, bounded repairs and external acceptance. Identify TBO Dot rooms separately; use the normal signed-in client only when programmatic delivery or replies cannot be established.
 ---
 
 # Codex Dot Bus — minimal router
